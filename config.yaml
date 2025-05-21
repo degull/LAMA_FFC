@@ -1,0 +1,17 @@
+data:
+  train_dir: "data/train"          # Places-Standard or CelebA-HQ train 경로
+  mask_type: "irregular"           # or "box"
+  image_size: 256
+
+train:
+  batch_size: 8
+  epochs: 50
+  lr: 1e-4
+  save_dir: "checkpoints"
+  sample_interval: 5
+  log_interval: 20
+
+loss:
+  perceptual: 1.0
+  adv: 0.1
+  feature_matching: 0.1

@@ -1,0 +1,26 @@
+lama/
+├── models/
+│   ├── ffc.py                   # Fast Fourier Convolution module
+│   ├── spectral_transform.py    # FFT + Conv + iFFT
+│   ├── residual_block.py        # Residual block with FFC
+│   ├── generator.py             # 전체 LaMa generator (fθ)
+│   └── discriminator.py         # PatchGAN-style discriminator
+├── loss/
+│   └── losses.py                # L_final: adversarial + perceptual + rec
+├── dataset/
+│   └── lama_dataset.py          # Places / CelebA-HQ + 마스크 로딩
+├── train.py                     # 학습 코드
+├── test.py                      # 테스트 코드
+├── utils.py                     # 보조 유틸 함수 (mask 생성 등)
+└── config.yaml                  # 학습 하이퍼파라미터 설정
+
+
+완전한 LaMa Generator 구조
+
+FFT 기반 FFC 모듈
+
+마스크 생성 포함한 Dataset
+
+Adversarial + Perceptual Loss 통합
+
+학습 및 테스트 실행 코드
