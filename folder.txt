@@ -1,18 +1,21 @@
 lama/
 ├── models/
-│   ├── ffc.py                   # Fast Fourier Convolution module
-│   ├── spectral_transform.py    # FFT + Conv + iFFT
-│   ├── residual_block.py        # Residual block with FFC
-│   ├── generator.py             # 전체 LaMa generator (fθ)
-│   └── discriminator.py         # PatchGAN-style discriminator
+│   ├── ffc.py
+│   ├── spectral_transform.py
+│   ├── residual_block.py
+│   ├── generator.py
+│   ├── discriminator.py
+│   └── discriminator_multi.py         # ✅ 추가된 multi-scale D
 ├── loss/
-│   └── losses.py                # L_final: adversarial + perceptual + rec
+│   └── losses.py
 ├── dataset/
-│   └── lama_dataset.py          # Places / CelebA-HQ + 마스크 로딩
-├── train.py                     # 학습 코드
-├── test.py                      # 테스트 코드
-├── utils.py                     # 보조 유틸 함수 (mask 생성 등)
-└── config.yaml                  # 학습 하이퍼파라미터 설정
+│   └── lama_dataset.py
+├── utils/
+│   ├── utils.py                       # 기존: 보조 함수
+│   └── detectron_mask_generator.py   # ✅ Detectron2 기반 마스크 생성기
+├── train.py
+├── test.py
+└── config.yaml
 
 
 완전한 LaMa Generator 구조
@@ -24,3 +27,28 @@ FFT 기반 FFC 모듈
 Adversarial + Perceptual Loss 통합
 
 학습 및 테스트 실행 코드
+
+# 수정된 폴더 구조
+
+lama/
+├── models/
+│   ├── ffc.py
+│   ├── spectral_transform.py
+│   ├── residual_block.py
+│   ├── generator.py
+│   ├── discriminator.py              # 단일 스케일 D (optional)
+│   └── discriminator_multi.py        # ✅ 멀티스케일 D
+│
+├── loss/
+│   └── losses.py                     # ✅ L1 + Perceptual + GAN Loss
+│
+├── dataset/
+│   ├── lama_dataset.py
+│   └── random_mask_generator.py      # ✅ Detectron2 대신 사용되는 마스크 생성기
+│
+├── utils/
+│   └── utils.py                      # 이미지 저장 등 보조 함수
+│
+├── train.py                          # ✅ Detectron2 코드 제거 + random mask만 사용
+├── test.py
+└── config.yaml

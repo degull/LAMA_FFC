@@ -1,7 +1,7 @@
 # dataset/lama_dataset.py
 import os
 import random
-import numpy as np
+import glob
 from PIL import Image, ImageDraw
 import torch
 from torch.utils.data import Dataset
@@ -17,11 +17,9 @@ class LaMaDataset(Dataset):
             phase (str): "train", "val", or "test"
         """
         self.image_dir = image_dir
-        self.image_paths = sorted([
-            os.path.join(image_dir, fname)
-            for fname in os.listdir(image_dir)
-            if fname.lower().endswith((".jpg", ".png"))
-        ])
+        # ✅ 하위 폴더까지 모두 포함한 이미지 경로 수집
+        self.image_paths = sorted(glob.glob(os.path.join(image_dir, "**", "*.jpg"), recursive=True) +
+                                  glob.glob(os.path.join(image_dir, "**", "*.png"), recursive=True))
         self.mask_type = mask_type
         self.image_size = image_size
         self.phase = phase
@@ -71,8 +69,8 @@ class LaMaDataset(Dataset):
             width = random.randint(10, 40)
             draw.line(points, fill=255, width=width)
 
-        mask = transforms.ToTensor()(mask)  # [1, H, W], float32 0~1
-        mask = (mask > 0.5).float()         # binary
+        mask = transforms.ToTensor()(mask)  # [1, H, W]
+        mask = (mask > 0.5).float()
         return mask
 
     def _generate_box_mask(self, h, w):

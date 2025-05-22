@@ -1,121 +1,95 @@
 # loss/losses.py
 import torch
 import torch.nn as nn
+import torchvision.models as models
 import torch.nn.functional as F
-from torchvision.models import vgg19
-from torchvision.models.feature_extraction import create_feature_extractor
-
-# ✅ L1 Reconstruction Loss
-class ReconstructionLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.loss = nn.L1Loss()
-
-    def forward(self, pred, target):
-        return self.loss(pred, target)
 
 
-# ✅ Adversarial Loss (PatchGAN or Multi-scale)
-class AdversarialLoss(nn.Module):
-    def __init__(self, type="hinge"):
-        super().__init__()
-        assert type in ["hinge", "bce"]
-        self.type = type
-
-    def forward(self, preds, is_real):
-        def loss_single(pred):
-            if self.type == "hinge":
-                return torch.mean(F.relu(1.0 - pred)) if is_real else torch.mean(F.relu(1.0 + pred))
-            else:
-                labels = torch.ones_like(pred) if is_real else torch.zeros_like(pred)
-                return F.binary_cross_entropy_with_logits(pred, labels)
-
-        # ✅ 리스트 형태 (multi-scale)인 경우
-        if isinstance(preds, list):
-            return sum([loss_single(p) for p in preds]) / len(preds)
-        else:
-            return loss_single(preds)
-
-
-# ✅ Feature Matching Loss (중간 feature 비교)
-class FeatureMatchingLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.loss = nn.L1Loss()
-
-    def forward(self, real_feats, fake_feats):
-        if isinstance(real_feats, list) and isinstance(fake_feats, list):
-            loss = 0.0
-            for rf, ff in zip(real_feats, fake_feats):
-                loss += self.loss(ff, rf.detach())
-            return loss / len(real_feats)
-        else:
-            return self.loss(fake_feats, real_feats.detach())
-
-
-# ✅ VGG 기반 Perceptual Loss
 class PerceptualLoss(nn.Module):
-    def __init__(self, layers=("relu1_1", "relu2_1", "relu3_1", "relu4_1"), weight=1.0):
+    def __init__(self, device, resize=True):
         super().__init__()
-        self.weight = weight
-        vgg = vgg19(pretrained=True).features
-        self.vgg = create_feature_extractor(vgg, return_nodes={l: l for l in layers})
-        for param in self.vgg.parameters():
+        vgg16 = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features[:16]
+        self.vgg_layers = vgg16.to(device)
+        for param in self.vgg_layers.parameters():
             param.requires_grad = False
-        self.loss = nn.L1Loss()
+        self.resize = resize
+        self.device = device
 
-    def forward(self, pred, target):
-        pred_feats = self.vgg(pred)
-        target_feats = self.vgg(target)
-        loss = 0.0
-        for k in pred_feats.keys():
-            loss += self.loss(pred_feats[k], target_feats[k].detach())
-        return self.weight * loss
+    def forward(self, input, target):
+        def normalize_batch(batch):
+            mean = torch.tensor([0.485, 0.456, 0.406], device=self.device)[None, :, None, None]
+            std = torch.tensor([0.229, 0.224, 0.225], device=self.device)[None, :, None, None]
+            return (batch - mean) / std
+
+        input = normalize_batch(input)
+        target = normalize_batch(target)
+
+        if self.resize:
+            input = F.interpolate(input, size=(224, 224), mode='bilinear', align_corners=False)
+            target = F.interpolate(target, size=(224, 224), mode='bilinear', align_corners=False)
+
+        features_input = self.vgg_layers(input)
+        features_target = self.vgg_layers(target)
+
+        return F.l1_loss(features_input, features_target)
 
 
-# ✅ 전체 종합 Loss
-class LaMaLoss(nn.Module):
-    def __init__(self, perceptual_weight=1.0, adv_weight=0.1, fm_weight=0.1):
+class GANLoss(nn.Module):
+    def __init__(self, gan_mode="hinge"):
         super().__init__()
-        self.rec_loss = ReconstructionLoss()
-        self.percep_loss = PerceptualLoss(weight=perceptual_weight)
-        self.adv_loss = AdversarialLoss(type="hinge")
-        self.fm_loss = FeatureMatchingLoss()
-        self.adv_weight = adv_weight
-        self.fm_weight = fm_weight
+        self.gan_mode = gan_mode
 
-    def forward(self, pred, target, disc_pred_fake, disc_feats_real=None, disc_feats_fake=None):
-        loss_rec = self.rec_loss(pred, target)
-        loss_percep = self.percep_loss(pred, target)
-        loss_adv = self.adv_loss(disc_pred_fake, True)
-
-        if disc_feats_real is not None and disc_feats_fake is not None:
-            loss_fm = self.fm_loss(disc_feats_real, disc_feats_fake)
+    def forward(self, pred, target_is_real):
+        if self.gan_mode == "hinge":
+            if target_is_real:
+                return torch.mean(F.relu(1.0 - pred))
+            else:
+                return torch.mean(F.relu(1.0 + pred))
         else:
-            loss_fm = 0.0
+            raise NotImplementedError(f"Unsupported GAN mode: {self.gan_mode}")
 
-        loss_total = (
-            loss_rec +
-            loss_percep +
-            self.adv_weight * loss_adv +
-            self.fm_weight * loss_fm
+
+class MultiScaleGANLoss(nn.Module):
+    def __init__(self, gan_mode="hinge"):
+        super().__init__()
+        self.gan_loss = GANLoss(gan_mode)
+
+    def forward(self, preds, target_is_real):
+        return sum(self.gan_loss(pred, target_is_real) for pred in preds) / len(preds)
+
+
+class LaMaLoss(nn.Module):
+    def __init__(self, device, lambda_l1=1.0, lambda_perc=0.1, lambda_gan=0.01):
+        super().__init__()
+        self.l1 = nn.L1Loss()
+        self.perceptual = PerceptualLoss(device)
+        self.gan = MultiScaleGANLoss()
+        self.lambda_l1 = lambda_l1
+        self.lambda_perc = lambda_perc
+        self.lambda_gan = lambda_gan
+
+    def forward(self, fake_img, real_img, pred_fake, pred_real=None):
+        loss_l1 = self.l1(fake_img, real_img)
+        loss_perc = self.perceptual(fake_img, real_img)
+        loss_gan = self.gan(pred_fake, True)
+
+        if pred_real is not None:
+            loss_d_real = self.gan(pred_real, True)
+            loss_d_fake = self.gan(pred_fake, False)
+            loss_d = (loss_d_real + loss_d_fake) * 0.5
+        else:
+            loss_d = torch.tensor(0.0, device=fake_img.device)
+
+        loss_g_total = (
+            self.lambda_l1 * loss_l1
+            + self.lambda_perc * loss_perc
+            + self.lambda_gan * loss_gan
         )
 
         return {
-            "loss_total": loss_total,
-            "loss_rec": loss_rec,
-            "loss_percep": loss_percep,
-            "loss_adv": loss_adv,
-            "loss_fm": loss_fm
+            "loss_l1": loss_l1,
+            "loss_perceptual": loss_perc,
+            "loss_gan": loss_gan,
+            "loss_generator_total": loss_g_total,
+            "loss_discriminator": loss_d,
         }
-
-
-"""
-Adversarial Loss (PatchGAN 기반)
-
-Feature Matching Loss
-
-Perceptual Loss (VGG-19 기반)
-
-L1 Reconstruction Loss
-"""

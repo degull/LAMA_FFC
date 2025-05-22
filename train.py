@@ -1,97 +1,72 @@
 # train.py
+# train.py
 import os
-import yaml
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torchvision.utils import save_image
 
 from models.generator import LaMaGenerator
 from models.discriminator_multi import MultiScaleDiscriminator
-from dataset.lama_dataset import LaMaDataset
 from loss.losses import LaMaLoss
-from utils.utils import save_sample_images
-from utils.detectron_mask_generator import setup_detectron2
-
-def load_config(config_path):
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+from dataset.lama_dataset import LaMaDataset
 
 def main():
-    cfg = load_config("config.yaml")
+    # ✅ 설정
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    image_dir = "E:/이미지개선/FFT/data/Places365/train"
+    save_dir = "output"
+    os.makedirs(save_dir, exist_ok=True)
 
-    # Optional: Detectron2 predictor for segmentation masks
-    predictor = setup_detectron2() if cfg["data"]["mask_type"] == "segmentation" else None
+    # ✅ 데이터셋 로딩
+    train_dataset = LaMaDataset(image_dir=image_dir, image_size=256, mask_type="irregular")
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0)  # ⚠️ Windows는 num_workers=0 안정적
 
-    # Dataset & Dataloader
-    train_set = LaMaDataset(
-        image_dir=cfg["data"]["train_dir"],
-        mask_type=cfg["data"]["mask_type"],
-        image_size=cfg["data"]["image_size"],
-        phase="train",
-        predictor=predictor
-    )
-    train_loader = DataLoader(train_set, batch_size=cfg["train"]["batch_size"], shuffle=True, num_workers=4)
-
-    # Models
+    # ✅ 모델 초기화
     generator = LaMaGenerator(in_channels=4).to(device)
-    discriminator = MultiScaleDiscriminator(num_scales=3).to(device)
+    discriminator = MultiScaleDiscriminator().to(device)
+    loss_fn = LaMaLoss(device)
+    optimizer_g = optim.Adam(generator.parameters(), lr=2e-4, betas=(0.5, 0.999))
+    optimizer_d = optim.Adam(discriminator.parameters(), lr=2e-4, betas=(0.5, 0.999))
 
-    # Loss & Optimizer
-    loss_fn = LaMaLoss(
-        perceptual_weight=cfg["loss"]["perceptual"],
-        adv_weight=cfg["loss"]["adv"],
-        fm_weight=cfg["loss"]["feature_matching"]
-    )
-    opt_G = optim.Adam(generator.parameters(), lr=cfg["train"]["lr"])
-    opt_D = optim.Adam(discriminator.parameters(), lr=cfg["train"]["lr"])
-
-    os.makedirs(cfg["train"]["save_dir"], exist_ok=True)
-
-    for epoch in range(cfg["train"]["epochs"]):
-        generator.train()
-        discriminator.train()
-
+    # ✅ 훈련 루프
+    for epoch in range(50):
         for i, batch in enumerate(train_loader):
-            img = batch["image"].to(device)
-            mask = batch["mask"].to(device)
-            input_tensor = batch["input"].to(device)
+            images = batch["image"].to(device)
+            masks = batch["mask"].to(device)
 
-            # --- Generator forward ---
-            fake = generator(input_tensor)
+            masked_images = images * (1 - masks)
+            inputs = torch.cat([masked_images, masks], dim=1)  # 4채널 입력
 
-            # --- Discriminator forward ---
-            pred_real = discriminator(img)
-            pred_fake = discriminator(fake.detach())
+            # 🔹 Generator
+            fake_images = generator(inputs)
+            pred_fake = discriminator(fake_images)
+            g_loss_dict = loss_fn(fake_images, images, pred_fake)
+            loss_g = g_loss_dict["loss_generator_total"]
 
-            # --- D loss (Multi-scale hinge loss) ---
-            loss_D = sum([
-                torch.mean(nn.ReLU()(1.0 - real)) + torch.mean(nn.ReLU()(1.0 + fake))
-                for real, fake in zip(pred_real, pred_fake)
-            ]) / len(pred_real)
+            optimizer_g.zero_grad()
+            loss_g.backward()
+            optimizer_g.step()
 
-            opt_D.zero_grad()
-            loss_D.backward()
-            opt_D.step()
+            # 🔹 Discriminator
+            pred_fake = discriminator(fake_images.detach())
+            pred_real = discriminator(images)
+            d_loss = loss_fn(fake_images.detach(), images, pred_fake, pred_real)["loss_discriminator"]
 
-            # --- G loss ---
-            pred_fake_G = discriminator(fake)
-            losses = loss_fn(fake, img, pred_fake_G)
-            opt_G.zero_grad()
-            losses["loss_total"].backward()
-            opt_G.step()
+            optimizer_d.zero_grad()
+            d_loss.backward()
+            optimizer_d.step()
 
-            if i % cfg["train"]["log_interval"] == 0:
-                print(f"[Epoch {epoch}/{cfg['train']['epochs']}][{i}/{len(train_loader)}] "
-                      f"Loss_G: {losses['loss_total']:.4f}, Loss_D: {loss_D:.4f}")
+            if i % 10 == 0:
+                print(f"[Epoch {epoch}][Iter {i}] G: {loss_g.item():.4f}, D: {d_loss.item():.4f}")
 
-        # Save model
-        torch.save(generator.state_dict(), os.path.join(cfg["train"]["save_dir"], f"lama_epoch{epoch}.pth"))
-
-        # Save sample output
-        if epoch % cfg["train"]["sample_interval"] == 0:
-            save_sample_images(fake, img, mask, cfg["train"]["save_dir"], epoch)
+        # ✅ Epoch마다 결과 저장
+        save_image(fake_images[:4], os.path.join(save_dir, f"epoch_{epoch}_fake.png"))
+        save_image(images[:4], os.path.join(save_dir, f"epoch_{epoch}_real.png"))
+        torch.save(generator.state_dict(), os.path.join(save_dir, f"lama_generator_epoch{epoch}.pth"))
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()  # ✅ Windows 호환성 확보
     main()
